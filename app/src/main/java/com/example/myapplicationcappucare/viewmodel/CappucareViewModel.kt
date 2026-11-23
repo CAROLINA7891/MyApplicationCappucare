@@ -8,12 +8,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.myapplicationcappucare.data.AppDatabase
 import com.example.myapplicationcappucare.data.MockData
+import com.example.myapplicationcappucare.data.MovimientoDao
+import com.example.myapplicationcappucare.data.MovimientoEntity
 import com.example.myapplicationcappucare.data.ProductoRepository
 import com.example.myapplicationcappucare.model.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -45,22 +49,21 @@ data class ErroresMovimiento(
 class CappucareViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: ProductoRepository
+    private val movimientoDao: MovimientoDao
 
-    // RF-05 / Room: Flow observado como StateFlow desde la base de datos
     val productos: StateFlow<List<Producto>>
+    val movimientos: StateFlow<List<Movimiento>>
 
-    private val _movimientos = MutableStateFlow<List<Movimiento>>(MockData.movimientos)
-    val movimientos: StateFlow<List<Movimiento>> = _movimientos.asStateFlow()
-
-    private val _usuarioActivo = MutableStateFlow<Usuario?>(MockData.usuarios.firstOrNull())
+    private val _usuarioActivo = MutableStateFlow<Usuario?>(null)
     val usuarioActivo: StateFlow<Usuario?> = _usuarioActivo.asStateFlow()
 
     var errorLogin by mutableStateOf<String?>(null)
         private set
 
     init {
-        val dao = AppDatabase.getDatabase(application).productoDao()
-        repository = ProductoRepository(dao)
+        val db = AppDatabase.getDatabase(application)
+        repository = ProductoRepository(db.productoDao())
+        movimientoDao = db.movimientoDao()
 
         productos = repository.todosLosProductos.stateIn(
             scope = viewModelScope,
@@ -68,12 +71,25 @@ class CappucareViewModel(application: Application) : AndroidViewModel(applicatio
             initialValue = emptyList()
         )
 
-        // Precarga de datos ficticios la primera vez si la base de datos está vacía
+        movimientos = movimientoDao.obtenerTodos()
+            .map { lista -> lista.map { it.toModel() } }
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = emptyList()
+            )
+
         viewModelScope.launch {
-            repository.todosLosProductos.collect { lista ->
-                if (lista.isEmpty()) {
-                    repository.precargarDatosIniciales(MockData.productos)
-                }
+            val productosActuales = repository.todosLosProductos.first()
+            if (productosActuales.isEmpty()) {
+                repository.precargarDatosIniciales(MockData.productos)
+            }
+
+            val movimientosActuales = movimientoDao.obtenerTodos().first()
+            if (movimientosActuales.isEmpty()) {
+                movimientoDao.insertarTodos(
+                    MockData.movimientos.map { MovimientoEntity.fromModel(it) }
+                )
             }
         }
     }
@@ -90,7 +106,8 @@ class CappucareViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         val user = MockData.usuarios.find {
-            it.usuario.trim().equals(usuarioIngresado.trim(), ignoreCase = true) && it.clave == claveIngresada
+            it.usuario.trim().equals(usuarioIngresado.trim(), ignoreCase = true) &&
+                    it.clave == claveIngresada
         }
 
         return if (user != null) {
@@ -103,8 +120,13 @@ class CappucareViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun limpiarErrorLogin() {
+        errorLogin = null
+    }
+
     fun logout() {
         _usuarioActivo.value = null
+        errorLogin = null
     }
 
     // --- RF-01: Validar y Guardar Producto ---
@@ -142,14 +164,18 @@ class CappucareViewModel(application: Application) : AndroidViewModel(applicatio
             val index = listaActual.indexOfFirst { it.id == producto.id }
 
             if (index != -1) {
-                // Edición: Preserva la cantidad disponible actual (RN-01)
                 val productoExistente = listaActual[index]
-                repository.guardarProducto(producto.copy(cantidadDisponible = productoExistente.cantidadDisponible))
-            } else {
-                // Producto Nuevo: Asigna ID correlativo y stock inicial 0
-                val nuevoId = "P" + (listaActual.size + 1)
                 repository.guardarProducto(
-                    producto.copy(id = nuevoId, cantidadDisponible = 0, estado = EstadoProducto.DISPONIBLE)
+                    producto.copy(cantidadDisponible = productoExistente.cantidadDisponible)
+                )
+            } else {
+                val nuevoId = "P" + System.currentTimeMillis().toString().takeLast(6)
+                repository.guardarProducto(
+                    producto.copy(
+                        id = nuevoId,
+                        cantidadDisponible = 0,
+                        estado = EstadoProducto.DISPONIBLE
+                    )
                 )
             }
         }
@@ -186,7 +212,11 @@ class CappucareViewModel(application: Application) : AndroidViewModel(applicatio
         val cantidad = cantidadStr.toIntOrNull()
 
         val errProd = if (producto == null) "Elige un producto" else null
-        val errMotivo = if (tipo == TipoMovimiento.SALIDA && motivo == null) "Elige el motivo de la salida" else null
+        val errMotivo = if (tipo == TipoMovimiento.SALIDA && motivo == null) {
+            "Elige el motivo de la salida"
+        } else {
+            null
+        }
 
         val errCant = when {
             cantidad == null || cantidad <= 0 -> "Ingresa una cantidad mayor que 0"
@@ -209,7 +239,7 @@ class CappucareViewModel(application: Application) : AndroidViewModel(applicatio
         val fechaActual = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
 
         val nuevoMovimiento = Movimiento(
-            id = "M" + (_movimientos.value.size + 1),
+            id = "M" + System.currentTimeMillis().toString().takeLast(6),
             productoId = productoId,
             fecha = fechaActual,
             tipo = tipo,
@@ -219,9 +249,9 @@ class CappucareViewModel(application: Application) : AndroidViewModel(applicatio
             responsable = user.nombre
         )
 
-        _movimientos.value = listOf(nuevoMovimiento) + _movimientos.value
-
         viewModelScope.launch {
+            movimientoDao.insertar(MovimientoEntity.fromModel(nuevoMovimiento))
+
             val producto = productos.value.find { it.id == productoId } ?: return@launch
             val nuevoStock = if (tipo == TipoMovimiento.INGRESO) {
                 producto.cantidadDisponible + cantidad
@@ -251,9 +281,9 @@ class CappucareViewModel(application: Application) : AndroidViewModel(applicatio
     // --- RF-10: Historial de Movimientos por Producto ---
     fun historialDe(productoId: String?): List<Movimiento> {
         val lista = if (productoId.isNullOrEmpty()) {
-            _movimientos.value
+            movimientos.value
         } else {
-            _movimientos.value.filter { it.productoId == productoId }
+            movimientos.value.filter { it.productoId == productoId }
         }
         return lista.sortedByDescending { it.fecha }
     }

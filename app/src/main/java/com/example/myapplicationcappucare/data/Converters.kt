@@ -3,6 +3,8 @@ package com.example.myapplicationcappucare.data
 import androidx.room.TypeConverter
 import com.example.myapplicationcappucare.model.CategoriaInsumo
 import com.example.myapplicationcappucare.model.EstadoProducto
+import com.example.myapplicationcappucare.model.MotivoSalida
+import com.example.myapplicationcappucare.model.TipoMovimiento
 
 class Converters {
 
@@ -13,7 +15,7 @@ class Converters {
     fun toCategoria(value: String): CategoriaInsumo = try {
         CategoriaInsumo.valueOf(value)
     } catch (e: Exception) {
-        CategoriaInsumo.values().first()
+        CategoriaInsumo.entries.first()
     }
 
     @TypeConverter
@@ -24,5 +26,27 @@ class Converters {
         EstadoProducto.valueOf(value)
     } catch (e: Exception) {
         EstadoProducto.DISPONIBLE
+    }
+
+    @TypeConverter
+    fun fromTipoMovimiento(tipo: TipoMovimiento): String = tipo.name
+
+    @TypeConverter
+    fun toTipoMovimiento(value: String): TipoMovimiento = try {
+        TipoMovimiento.valueOf(value)
+    } catch (e: Exception) {
+        TipoMovimiento.INGRESO
+    }
+
+    @TypeConverter
+    fun fromMotivoSalida(motivo: MotivoSalida?): String? = motivo?.name
+
+    @TypeConverter
+    fun toMotivoSalida(value: String?): MotivoSalida? = value?.let {
+        try {
+            MotivoSalida.valueOf(it)
+        } catch (e: Exception) {
+            null
+        }
     }
 }
